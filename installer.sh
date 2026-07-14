@@ -16,7 +16,7 @@ mkdir -p /tmp/pterodactyl-installer
 
 ejecutar_modulo() {
     local script_name=$1
-    echo -e "${AZUL}[*] Obteniendo módulo $script_name...${NC}"
+    echo -e "${AZUL}[*] Descargando y ejecutando módulo $script_name...${NC}"
     curl -sSL "$REPO_BASE/scripts/$script_name" -o "/tmp/pterodactyl-installer/$script_name"
     chmod +x "/tmp/pterodactyl-installer/$script_name"
     bash "/tmp/pterodactyl-installer/$script_name"
