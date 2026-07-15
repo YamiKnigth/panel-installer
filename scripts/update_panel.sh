@@ -41,7 +41,7 @@ tar -xzf "$tmp_dir/panel.tar.gz" -C "$tmp_dir"
 find "$PANEL_DIR" -mindepth 1 -maxdepth 1 ! -name '.env' ! -name 'storage' ! -name 'bootstrap' -exec rm -rf {} +
 cp -a "$tmp_dir"/. "$PANEL_DIR"/
 
-composer install --no-dev --optimize-autoloader
+COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
 php artisan view:clear
 php artisan config:clear
 php artisan migrate --seed --force

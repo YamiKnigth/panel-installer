@@ -10,6 +10,8 @@ require_root
 ensure_noninteractive
 assert_supported_panel_os
 
+trap 'log_error "Falló la instalación del panel en la línea $LINENO: $BASH_COMMAND"' ERR
+
 if panel_installed; then
   log_warn "Ya se detectó una instalación del panel en $PANEL_DIR."
   if confirm_action "¿Quieres continuar con una reinstalación limpia?"; then
@@ -38,6 +40,69 @@ fi
 panel_url="${panel_scheme}://${panel_host}"
 db_password=$(random_alnum 32)
 admin_password=$(random_alnum 20)
+
+configure_panel_nginx() {
+  log_info "Aplicando configuración de Nginx..."
+  rm -f /etc/nginx/sites-enabled/default
+
+  if [ "$use_ssl" = "yes" ]; then
+  systemctl stop nginx
+  certbot certonly --standalone --non-interactive --agree-tos --email "$panel_email" -d "$panel_host"
+  cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
+server {
+  listen 80;
+  server_name $panel_host;
+  return 301 https://\$server_name\$request_uri;
+}
+
+server {
+  listen 443 ssl http2;
+  server_name $panel_host;
+  root $PANEL_DIR/public;
+  index index.php;
+  client_max_body_size 100m;
+
+  ssl_certificate /etc/letsencrypt/live/$panel_host/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/$panel_host/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+
+  location / {
+    try_files \$uri \$uri/ /index.php?\$query_string;
+  }
+
+  location ~ \.php\$ {
+    include snippets/fastcgi-php.conf;
+    fastcgi_pass unix:$php_fpm_socket;
+    fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
+  }
+}
+EOF
+  else
+  cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
+server {
+  listen 80;
+  server_name $panel_host;
+  root $PANEL_DIR/public;
+  index index.php;
+  charset utf-8;
+  client_max_body_size 100m;
+
+  location / {
+    try_files \$uri \$uri/ /index.php?\$query_string;
+  }
+
+  location ~ \.php\$ {
+    include snippets/fastcgi-php.conf;
+    fastcgi_pass unix:$php_fpm_socket;
+    fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
+  }
+}
+EOF
+  fi
+
+  ln -sfn /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
+  nginx -t
+}
 
 log_info "Actualizando índices de paquetes..."
 apt-get update -y
@@ -92,6 +157,8 @@ curl -fsSL https://github.com/pterodactyl/panel/releases/latest/download/panel.t
 tar -xzf panel.tar.gz
 rm -f panel.tar.gz
 
+configure_panel_nginx
+
 log_info "Configurando MariaDB para el panel..."
 mysql -u root <<EOF
 CREATE DATABASE IF NOT EXISTS panel;
@@ -102,7 +169,7 @@ FLUSH PRIVILEGES;
 EOF
 
 cp .env.example .env
-composer install --no-dev --optimize-autoloader
+COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
 php artisan key:generate --force
 php artisan p:environment:setup --author="$panel_email" --url="$panel_url" --timezone="$panel_timezone" --cache="redis" --session="database" --queue="redis" --redis-host="127.0.0.1" --redis-pass="" --redis-port="6379" --settings-ui="yes" --telemetry="no"
 php artisan p:environment:database --host="127.0.0.1" --port="3306" --database="panel" --username="pterodactyl" --password="$db_password"
@@ -135,65 +202,6 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
-log_info "Aplicando configuración de Nginx..."
-rm -f /etc/nginx/sites-enabled/default
-
-if [ "$use_ssl" = "yes" ]; then
-  systemctl stop nginx
-  certbot certonly --standalone --non-interactive --agree-tos --email "$panel_email" -d "$panel_host"
-  cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
-server {
-    listen 80;
-    server_name $panel_host;
-    return 301 https://\$server_name\$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name $panel_host;
-    root $PANEL_DIR/public;
-    index index.php;
-    client_max_body_size 100m;
-
-    ssl_certificate /etc/letsencrypt/live/$panel_host/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$panel_host/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location ~ \.php\$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:$php_fpm_socket;
-        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
-    }
-}
-EOF
-else
-  cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
-server {
-    listen 80;
-    server_name $panel_host;
-    root $PANEL_DIR/public;
-    index index.php;
-    charset utf-8;
-    client_max_body_size 100m;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location ~ \.php\$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:$php_fpm_socket;
-        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
-    }
-}
-EOF
-fi
-
-ln -sfn /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
 systemctl daemon-reload
 systemctl enable --now pteroq.service
 systemctl restart nginx "$php_fpm_service" redis-server mariadb pteroq.service
