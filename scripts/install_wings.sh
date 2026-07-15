@@ -9,6 +9,8 @@ source "$SCRIPT_DIR/common.sh"
 require_root
 ensure_noninteractive
 
+trap 'log_error "Falló la instalación de Wings en la línea $LINENO: $BASH_COMMAND"' ERR
+
 log_info "Instalación de Wings con registro directo en MariaDB del panel."
 
 if ! command_exists docker; then
@@ -97,14 +99,64 @@ sql_exec() {
   fi
 }
 
+join_csv() {
+  local IFS=,
+  echo "$*"
+}
+
+quote_identifier() {
+  printf '`%s`' "$1"
+}
+
+# Compatibilidad de esquemas: algunas versiones usan `long` y otras `name` en locations.
+mapfile -t location_columns < <(sql "SHOW COLUMNS FROM locations;" | awk '{print $1}')
+location_column_exists() {
+  local needle="$1"
+  local value=""
+  for value in "${location_columns[@]}"; do
+    if [ "$value" = "$needle" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 location_id=$(sql "SELECT id FROM locations WHERE short = '$(sql_escape "$location_short")' LIMIT 1;")
 if [ -z "$location_id" ]; then
-  sql_exec "INSERT INTO locations (short, long, created_at, updated_at) VALUES ('$(sql_escape "$location_short")', '$(sql_escape "$location_long")', NOW(), NOW());"
+  location_name_column=""
+  if location_column_exists "long"; then
+    location_name_column="long"
+  elif location_column_exists "name"; then
+    location_name_column="name"
+  else
+    log_error "La tabla locations no tiene columna long ni name."
+    exit 1
+  fi
+
+  declare -a location_insert_columns=()
+  declare -a location_insert_values=()
+
+  location_insert_columns+=("$(quote_identifier "short")")
+  location_insert_values+=("'$(sql_escape "$location_short")'")
+  location_insert_columns+=("$(quote_identifier "$location_name_column")")
+  location_insert_values+=("'$(sql_escape "$location_long")'")
+
+  if location_column_exists "created_at"; then
+    location_insert_columns+=("$(quote_identifier "created_at")")
+    location_insert_values+=("NOW()")
+  fi
+
+  if location_column_exists "updated_at"; then
+    location_insert_columns+=("$(quote_identifier "updated_at")")
+    location_insert_values+=("NOW()")
+  fi
+
+  sql_exec "INSERT INTO locations ($(join_csv "${location_insert_columns[@]}")) VALUES ($(join_csv "${location_insert_values[@]}"));"
   location_id=$(sql "SELECT id FROM locations WHERE short = '$(sql_escape "$location_short")' LIMIT 1;")
 fi
 
 mapfile -t node_columns < <(sql "SHOW COLUMNS FROM nodes;" | awk '{print $1}')
-column_exists() {
+node_column_exists() {
   local needle="$1"
   local value=""
   for value in "${node_columns[@]}"; do
@@ -119,14 +171,14 @@ node_uuid=$(cat /proc/sys/kernel/random/uuid)
 token_id=$(random_alnum 16)
 token_value=$(random_alnum 64)
 
-declare -a insert_columns=()
-declare -a insert_values=()
+declare -a node_insert_columns=()
+declare -a node_insert_values=()
 append_node_field() {
   local field="$1"
   local value="$2"
-  if column_exists "$field"; then
-    insert_columns+=("$field")
-    insert_values+=("$value")
+  if node_column_exists "$field"; then
+    node_insert_columns+=("$(quote_identifier "$field")")
+    node_insert_values+=("$value")
   fi
 }
 
@@ -152,7 +204,7 @@ append_node_field daemon_token "'$(sql_escape "$token_value")'"
 append_node_field created_at "NOW()"
 append_node_field updated_at "NOW()"
 
-sql_exec "INSERT INTO nodes ($(IFS=,; echo "${insert_columns[*]}")) VALUES ($(IFS=,; echo "${insert_values[*]}"));"
+sql_exec "INSERT INTO nodes ($(join_csv "${node_insert_columns[@]}")) VALUES ($(join_csv "${node_insert_values[@]}"));"
 node_id=$(sql "SELECT id FROM nodes WHERE uuid = '$(sql_escape "$node_uuid")' LIMIT 1;")
 
 mapfile -t allocation_columns < <(sql "SHOW COLUMNS FROM allocations;" | awk '{print $1}')
@@ -173,7 +225,7 @@ append_allocation_field() {
   local field="$1"
   local value="$2"
   if allocation_column_exists "$field"; then
-    allocation_insert_columns+=("$field")
+    allocation_insert_columns+=("$(quote_identifier "$field")")
     allocation_insert_values+=("$value")
   fi
 }
@@ -187,7 +239,7 @@ append_allocation_field server_id "NULL"
 append_allocation_field created_at "NOW()"
 append_allocation_field updated_at "NOW()"
 
-sql_exec "INSERT INTO allocations ($(IFS=,; echo "${allocation_insert_columns[*]}")) VALUES ($(IFS=,; echo "${allocation_insert_values[*]}"));"
+sql_exec "INSERT INTO allocations ($(join_csv "${allocation_insert_columns[@]}")) VALUES ($(join_csv "${allocation_insert_values[@]}"));"
 
 cat > "$WINGS_CONFIG" <<EOF
 debug: false
@@ -239,85 +291,4 @@ systemctl enable --now wings.service
 log_success "Wings instalado y registrado."
 echo "Node ID: $node_id"
 echo "UUID: $node_uuid"
-echo "Allocation inicial: $allocation_ip:$allocation_port"#!/bin/bash
-
-VERDE='\033[0;32m'
-AZUL='\033[0;34m'
-ROJO='\033[0;31m'
-NC='\033[0m'
-
-echo -e "${AZUL}[*] Iniciando instalación automatizada de Wings y Docker...${NC}"
-
-DOMINIO_NGINX=$(cat /tmp/ptero_domain 2>/dev/null || ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
-IP_DETECTADA=$(cat /tmp/ptero_ip 2>/dev/null || hostname -I | awk '{print $1}')
-
-echo -e "${AZUL}[*] Instalando Docker Daemon...${NC}"
-curl -sSL https://get.docker.com/ | CHANNEL=stable bash
-systemctl enable --now docker
-
-echo -e "${AZUL}[*] Descargando binario de Pterodactyl Wings...${NC}"
-mkdir -p /etc/pterodactyl /var/log/pterodactyl
-curl -L -o /usr/local/bin/wings "https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64"
-chmod u+x /usr/local/bin/wings
-
-echo -e "${AZUL}[*] Registrando Local Node y generando tokens internos...${NC}"
-NODE_UUID=$(cat /proc/sys/kernel/random/uuid)
-WINGS_TOKEN=$(openssl rand -hex 32)
-WINGS_TOKEN_ID=$(openssl rand -hex 8)
-
-mysql -u root panel -e "INSERT INTO nodes (uuid, name, location_id, public, fqdn, scheme, behind_proxy, maintenance_mode, memory, memory_overallocate, disk, disk_overallocate, upload_size, daemon_listen, daemon_sftp, daemon_token_id, daemon_token, created_at, updated_at) VALUES ('${NODE_UUID}', 'LocalNode', 1, 1, '${DOMINIO_NGINX}', 'http', 0, 0, 2048, 0, 20000, 0, 100, 8080, 2022, '${WINGS_TOKEN_ID}', '${WINGS_TOKEN}', NOW(), NOW());"
-
-NODE_ID=$(mysql -u root panel -s -N -e "SELECT id FROM nodes WHERE uuid='${NODE_UUID}';")
-mysql -u root panel -e "INSERT INTO allocations (node_id, ip, ip_alias, port, assigned_to_instance_id, created_at, updated_at) VALUES (${NODE_ID}, '${IP_DETECTADA}', NULL, 25565, NULL, NOW(), NOW());"
-
-cat <<EOF > /etc/pterodactyl/config.yml
-debug: false
-uuid: ${NODE_UUID}
-token_id: ${WINGS_TOKEN_ID}
-token: ${WINGS_TOKEN}
-api:
-  host: 0.0.0.0
-  port: 8080
-  ssl:
-    enabled: false
-    cert: /etc/letsencrypt/live/${DOMINIO_NGINX}/fullchain.pem
-    key: /etc/letsencrypt/live/${DOMINIO_NGINX}/privkey.pem
-  upload_size: 100
-system:
-  data: /var/lib/pterodactyl/volumes
-  sftp:
-    bind_port: 2022
-allowed_mounts: []
-EOF
-
-cat <<EOF > /etc/systemd/system/wings.service
-[Unit]
-Description=Pterodactyl Wings Daemon
-After=docker.service
-Requires=docker.service
-PartOf=docker.service
-
-[Service]
-User=root
-WorkingDirectory=/etc/pterodactyl
-LimitNOFILE=4096
-PIDFile=/var/run/wings/daemon.pid
-ExecStart=/usr/local/bin/wings
-Restart=on-failure
-StartLimitInterval=180
-StartLimitBurst=30
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now wings
-
-echo -e "\n${VERDE}==================================================${NC}"
-echo -e "${VERDE}    FIN DEL SCRIPT DE INSTALACIÓN DE WINGS       ${NC}"
-echo -e "${VERDE}==================================================${NC}"
-echo -e "Nodo Autoregistrado: LocalNode (ID: ${NODE_ID})"
-echo -e "${VERDE}==================================================${NC}"
-echo -e "${AZUL}Si ves algún error arriba, haz scroll en tu consola para revisarlo.${NC}\n"
+echo "Allocation inicial: $allocation_ip:$allocation_port"
