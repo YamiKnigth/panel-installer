@@ -104,6 +104,21 @@ EOF
   nginx -t
 }
 
+install_panel_crontab() {
+  local cron_line
+  local existing_crontab
+
+  cron_line="* * * * * php $PANEL_DIR/artisan schedule:run >> /dev/null 2>&1"
+  existing_crontab="$(crontab -l 2>/dev/null || true)"
+
+  {
+    if [ -n "$existing_crontab" ]; then
+      printf '%s\n' "$existing_crontab" | grep -F -v "$PANEL_DIR/artisan schedule:run" || true
+    fi
+    printf '%s\n' "$cron_line"
+  } | crontab -
+}
+
 log_info "Actualizando índices de paquetes..."
 apt-get update -y
 php_version=$(detect_available_php_version)
@@ -179,10 +194,7 @@ php artisan p:user:make --email="$panel_email" --username="admin" --name-first="
 chown -R www-data:www-data "$PANEL_DIR"
 chmod -R 755 "$PANEL_DIR/storage" "$PANEL_DIR/bootstrap/cache"
 
-crontab -l 2>/dev/null | grep -v "$PANEL_DIR/artisan schedule:run" | {
-  cat
-  echo "* * * * * php $PANEL_DIR/artisan schedule:run >> /dev/null 2>&1"
-} | crontab -
+install_panel_crontab
 
 cat > /etc/systemd/system/pteroq.service <<EOF
 [Unit]
