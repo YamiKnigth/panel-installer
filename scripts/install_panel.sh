@@ -24,7 +24,6 @@ else
     URL_PANEL="http://$DOMINIO_NGINX"
 fi
 
-# Evitar que ventanas de configuración de Ubuntu frenen el script
 export DEBIAN_FRONTEND=noninteractive
 
 echo -e "${AZUL}[*] Actualizando sistema e instalando dependencias base...${NC}"
@@ -32,7 +31,11 @@ apt update -y && apt upgrade -y
 apt -y install software-properties-common curl apt-transport-https ca-certificates gnupg certbot python3-certbot-nginx zip unzip tar git
 
 echo -e "${AZUL}[*] Instalando Nginx, MariaDB, Redis y PHP 8.3 de forma nativa...${NC}"
-apt -y install php8.3 php8.3-{common,cli,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip} mariadb-server nginx redis-server
+# CORRECCIÓN: Separar todos los paquetes de PHP para evitar que la consola ignore las llaves
+apt -y install php8.3 php8.3-common php8.3-cli php8.3-gd php8.3-mysql php8.3-mbstring php8.3-bcmath php8.3-xml php8.3-fpm php8.3-curl php8.3-zip mariadb-server nginx redis-server
+
+# Asegurar que PHP-FPM se encienda y registre correctamente
+systemctl enable --now php8.3-fpm
 
 # Instalar Composer
 curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
