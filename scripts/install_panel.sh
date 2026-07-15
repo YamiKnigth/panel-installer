@@ -5,16 +5,12 @@ AZUL='\033[0;34m'
 ROJO='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${AZUL}[*] Iniciando instalación oficial del Panel Pterodactyl...${NC}"
+echo -e "${AZUL}[*] Iniciando instalación oficial del Panel Pterodactyl (Ubuntu 24.04 Nativo)...${NC}"
 
-# 1. Detectar la IP interna real de la máquina virtual (Evita capturar la WAN del módem)
 IP_DETECTADA=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}' || hostname -I | awk '{print $1}')
-
-# Generación automática de contraseñas seguras
 PASS_DB=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9')
 PASS_ADMIN=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
 
-# 2. Preguntas Interactivas
 read -p "Introduce el correo electrónico para el Administrador: " EMAIL_ADMIN
 read -p "¿Deseas instalar un certificado SSL gratuito (HTTPS)? (y/n): " USAR_SSL
 
@@ -28,24 +24,19 @@ else
     URL_PANEL="http://$DOMINIO_NGINX"
 fi
 
+# Evitar que ventanas de configuración de Ubuntu frenen el script
+export DEBIAN_FRONTEND=noninteractive
+
 echo -e "${AZUL}[*] Actualizando sistema e instalando dependencias base...${NC}"
 apt update -y && apt upgrade -y
 apt -y install software-properties-common curl apt-transport-https ca-certificates gnupg certbot python3-certbot-nginx zip unzip tar git
 
-# Añadir repositorios oficiales para PHP 8.3, Redis y MariaDB
-LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
-curl -fsSL https://packages.redis.io/gpg | gpg --yes --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/redis.list
-curl -sS https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | bash
-
-apt update -y
-echo -e "${AZUL}[*] Instalando Nginx, MariaDB, Redis y PHP 8.3...${NC}"
+echo -e "${AZUL}[*] Instalando Nginx, MariaDB, Redis y PHP 8.3 de forma nativa...${NC}"
 apt -y install php8.3 php8.3-{common,cli,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip} mariadb-server nginx redis-server
 
 # Instalar Composer
 curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
-# Descargar archivos oficiales de Pterodactyl
 echo -e "${AZUL}[*] Descargando Panel...${NC}"
 mkdir -p /var/www/pterodactyl
 cd /var/www/pterodactyl
@@ -53,7 +44,6 @@ curl -Lo panel.tar.gz https://github.com/pterodactyl/panel/releases/latest/downl
 tar -xzvf panel.tar.gz
 chmod -R 755 storage/* bootstrap/cache/
 
-# Configurar Base de Datos MariaDB
 echo -e "${AZUL}[*] Configurando MariaDB...${NC}"
 mysql -u root -e "CREATE DATABASE IF NOT EXISTS panel;"
 mysql -u root -e "CREATE USER IF NOT EXISTS 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${PASS_DB}';"
@@ -61,25 +51,19 @@ mysql -u root -e "ALTER USER 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${PASS_DB}
 mysql -u root -e "GRANT ALL PRIVILEGES ON panel.* TO 'pterodactyl'@'127.0.0.1' WITH GRANT OPTION;"
 mysql -u root -e "FLUSH PRIVILEGES;"
 
-# Configuración del Entorno de Pterodactyl
 echo -e "${AZUL}[*] Ejecutando instalador interno (Artisan)...${NC}"
 cp .env.example .env
 composer install --no-dev --optimize-autoloader
 php artisan key:generate --force
-
-# Configurar archivo de entorno sin interacción
 php artisan p:environment:setup --author="$EMAIL_ADMIN" --url="$URL_PANEL" --timezone="America/Mexico_City" --cache="redis" --session="database" --queue="redis" --redis-host="127.0.0.1" --redis-pass="" --redis-port="6379" --settings-ui="yes" --telemetry="no"
 php artisan p:environment:database --host="127.0.0.1" --port="3306" --database="panel" --username="pterodactyl" --password="${PASS_DB}"
 php artisan migrate --seed --force
 
-# Crear usuario Administrador inicial
 echo -e "${AZUL}[*] Creando cuenta de administrador...${NC}"
 php artisan p:user:make --email="$EMAIL_ADMIN" --username="admin" --name-first="Admin" --name-last="User" --password="${PASS_ADMIN}" --admin=1
 
-# Permisos finales de directorios
 chown -R www-data:www-data /var/www/pterodactyl/*
 
-# Configurar Cron y cola de trabajos (Queue Worker)
 crontab -l 2>/dev/null | grep -v "/var/www/pterodactyl/artisan schedule:run" | { cat; echo "* * * * * php /var/www/pterodactyl/artisan schedule:run >> /dev/null 2>&1"; } | crontab -
 
 cat <<EOF > /etc/systemd/system/pteroq.service
@@ -100,9 +84,82 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
+systemctl daemon-reload
 systemctl enable --now pteroq.service
 systemctl enable --now redis-server
 
-# Configuración del Servidor Web Nginx
 echo -e "${AZUL}[*] Aplicando archivos de configuración a Nginx...${NC}"
-rm -f /etc
+rm -f /etc/nginx/sites-enabled/default
+
+if [[ "$USAR_SSL" == "y" ]]; then
+    systemctl stop nginx
+    certbot certonly --standalone -d "$DOMINIO_NGINX" --agree-tos --email "$EMAIL_ADMIN" --non-interactive
+    
+    cat <<EOF > /etc/nginx/sites-available/pterodactyl.conf
+server {
+    listen 80;
+    server_name $DOMINIO_NGINX;
+    return 301 https://\$server_name\$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    server_name $DOMINIO_NGINX;
+    root /var/www/pterodactyl/public;
+    index index.php;
+    client_max_body_size 100m;
+    ssl_certificate /etc/letsencrypt/live/$DOMINIO_NGINX/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMINIO_NGINX/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+    location ~ \.php\$ {
+        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+    }
+}
+EOF
+else
+    cat <<EOF > /etc/nginx/sites-available/pterodactyl.conf
+server {
+    listen 80;
+    server_name $DOMINIO_NGINX;
+    root /var/www/pterodactyl/public;
+    index index.html index.htm index.php;
+    charset utf-8;
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+    location ~ \.php\$ {
+        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+    }
+}
+EOF
+fi
+
+ln -s /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
+systemctl restart nginx
+
+echo "--- CREDENCIALES PANEL PTERODACTYL ---" > ~/credenciales_pterodactyl.txt
+echo "URL del Panel: $URL_PANEL" >> ~/credenciales_pterodactyl.txt
+echo "Base de Datos: panel" >> ~/credenciales_pterodactyl.txt
+echo "Usuario DB: pterodactyl" >> ~/credenciales_pterodactyl.txt
+echo "Contraseña DB: $PASS_DB" >> ~/credenciales_pterodactyl.txt
+echo "Usuario de acceso: admin" >> ~/credenciales_pterodactyl.txt
+echo "Email Administrador: $EMAIL_ADMIN" >> ~/credenciales_pterodactyl.txt
+echo "Contraseña Administrador: $PASS_ADMIN" >> ~/credenciales_pterodactyl.txt
+
+clear
+echo -e "${VERDE}==================================================${NC}"
+echo -e "${VERDE}      INSTALACIÓN COMPLETADA EXITOSAMENTE        ${NC}"
+echo -e "${VERDE}==================================================${NC}"
+cat ~/credenciales_pterodactyl.txt
+echo -e "${VERDE}==================================================${NC}"
+echo -e "Las credenciales se guardaron en: ~/credenciales_pterodactyl.txt"
