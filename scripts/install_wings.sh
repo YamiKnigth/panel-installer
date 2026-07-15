@@ -33,6 +33,7 @@ panel_db_port="3306"
 panel_db_name="panel"
 panel_db_user=""
 panel_db_password=""
+panel_app_key=""
 
 if [ "$panel_mode" = "1" ] && panel_installed; then
   load_panel_db_credentials
@@ -43,6 +44,7 @@ if [ "$panel_mode" = "1" ] && panel_installed; then
   panel_db_name="$PANEL_DB_NAME"
   panel_db_user="$PANEL_DB_USER"
   panel_db_password="$PANEL_DB_PASSWORD"
+  panel_app_key="$(env_value APP_KEY "$PANEL_DIR/.env" 2>/dev/null || true)"
 elif [ "$panel_mode" = "2" ] || [ "$panel_mode" = "1" ]; then
   if [ "$panel_mode" = "1" ]; then
     log_warn "No se detectó un panel local; se solicitarán credenciales de un panel remoto."
@@ -53,8 +55,15 @@ elif [ "$panel_mode" = "2" ] || [ "$panel_mode" = "1" ]; then
   panel_db_name=$(prompt_default "Nombre de la base de datos [panel]: " "panel")
   panel_db_user=$(prompt_required "Usuario de base de datos con permisos sobre el panel: ")
   panel_db_password=$(prompt_secret_required "Contraseña del usuario de base de datos: ")
+  log_info "El APP_KEY está en /var/www/pterodactyl/.env del servidor del panel."
+  panel_app_key=$(prompt_required "APP_KEY del panel (valor completo, ej. base64:XXXX...): ")
 else
   log_error "Opción de panel inválida."
+  exit 1
+fi
+
+if [ -z "$panel_app_key" ]; then
+  log_error "No se pudo obtener el APP_KEY del panel. Es necesario para cifrar los tokens del nodo."
   exit 1
 fi
 
@@ -81,6 +90,59 @@ mkdir -p /etc/pterodactyl /var/log/pterodactyl /var/lib/pterodactyl/volumes /var
 curl -fsSL https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64 -o /usr/local/bin/wings
 chmod +x /usr/local/bin/wings
 
+node_uuid=$(cat /proc/sys/kernel/random/uuid)
+token_id=$(random_alnum 16)
+token_value=$(random_alnum 64)
+
+log_info "Cifrando tokens con APP_KEY del panel..."
+
+cat > /tmp/ptero_encrypt.php << 'PHPEOF'
+<?php
+$appKey = getenv('PTERO_APP_KEY');
+if (strncmp($appKey, 'base64:', 7) === 0) {
+    $appKey = base64_decode(substr($appKey, 7));
+}
+if (strlen($appKey) !== 32) {
+    fwrite(STDERR, 'Error: APP_KEY decodificado debe tener 32 bytes. Longitud: ' . strlen($appKey) . PHP_EOL);
+    exit(1);
+}
+function laravel_encrypt(string $value, string $key): string {
+    $iv = random_bytes(16);
+    $encrypted = openssl_encrypt(serialize($value), 'AES-256-CBC', $key, 0, $iv);
+    if ($encrypted === false) {
+        fwrite(STDERR, 'openssl_encrypt falló: ' . openssl_error_string() . PHP_EOL);
+        exit(1);
+    }
+    $ivBase64 = base64_encode($iv);
+    $mac = base64_encode(hash_hmac('sha256', $ivBase64 . $encrypted, $key, true));
+    return base64_encode(json_encode(['iv' => $ivBase64, 'value' => $encrypted, 'mac' => $mac, 'tag' => '']));
+}
+echo json_encode([
+    'enc_token_id' => laravel_encrypt(getenv('PTERO_TOKEN_ID'), $appKey),
+    'enc_token'    => laravel_encrypt(getenv('PTERO_TOKEN'), $appKey),
+]);
+PHPEOF
+
+encrypt_result=$(
+  PTERO_APP_KEY="$panel_app_key" \
+  PTERO_TOKEN_ID="$token_id" \
+  PTERO_TOKEN="$token_value" \
+  php /tmp/ptero_encrypt.php
+)
+rm -f /tmp/ptero_encrypt.php
+
+cat > /tmp/ptero_json.php << 'PHPEOF'
+<?php
+$data = json_decode(file_get_contents('php://stdin'), true);
+if (!isset($data[$argv[1]])) { fwrite(STDERR, 'Clave no encontrada: '.$argv[1].PHP_EOL); exit(1); }
+echo $data[$argv[1]];
+PHPEOF
+enc_token_id=$(printf '%s' "$encrypt_result" | php /tmp/ptero_json.php enc_token_id)
+enc_token=$(printf '%s' "$encrypt_result" | php /tmp/ptero_json.php enc_token)
+rm -f /tmp/ptero_json.php
+
+log_success "Tokens cifrados correctamente."
+
 sql() {
   local query="$1"
   if [ -n "$panel_db_password" ]; then
@@ -99,147 +161,91 @@ sql_exec() {
   fi
 }
 
-join_csv() {
-  local IFS=,
-  echo "$*"
-}
+join_csv() { local IFS=,; echo "$*"; }
 
-quote_identifier() {
-  printf '`%s`' "$1"
-}
-
-# Compatibilidad de esquemas: algunas versiones usan `long` y otras `name` en locations.
 mapfile -t location_columns < <(sql "SHOW COLUMNS FROM locations;" | awk '{print $1}')
 location_column_exists() {
-  local needle="$1"
-  local value=""
-  for value in "${location_columns[@]}"; do
-    if [ "$value" = "$needle" ]; then
-      return 0
-    fi
-  done
+  local needle="$1" value=""
+  for value in "${location_columns[@]}"; do [ "$value" = "$needle" ] && return 0; done
   return 1
 }
 
 location_id=$(sql "SELECT id FROM locations WHERE short = '$(sql_escape "$location_short")' LIMIT 1;")
 if [ -z "$location_id" ]; then
-  location_name_column=""
-  if location_column_exists "long"; then
-    location_name_column="long"
-  elif location_column_exists "name"; then
-    location_name_column="name"
-  else
-    log_error "La tabla locations no tiene columna long ni name."
-    exit 1
-  fi
+  if location_column_exists "long"; then loc_name_col="long"
+  elif location_column_exists "name"; then loc_name_col="name"
+  else log_error "La tabla locations no tiene columna 'long' ni 'name'."; exit 1; fi
 
-  declare -a location_insert_columns=()
-  declare -a location_insert_values=()
-
-  location_insert_columns+=("$(quote_identifier "short")")
-  location_insert_values+=("'$(sql_escape "$location_short")'")
-  location_insert_columns+=("$(quote_identifier "$location_name_column")")
-  location_insert_values+=("'$(sql_escape "$location_long")'")
-
-  if location_column_exists "created_at"; then
-    location_insert_columns+=("$(quote_identifier "created_at")")
-    location_insert_values+=("NOW()")
-  fi
-
-  if location_column_exists "updated_at"; then
-    location_insert_columns+=("$(quote_identifier "updated_at")")
-    location_insert_values+=("NOW()")
-  fi
-
-  sql_exec "INSERT INTO locations ($(join_csv "${location_insert_columns[@]}")) VALUES ($(join_csv "${location_insert_values[@]}"));"
+  declare -a loc_cols=() loc_vals=()
+  loc_cols+=("\`short\`");            loc_vals+=("'$(sql_escape "$location_short")'")
+  loc_cols+=("\`${loc_name_col}\`");  loc_vals+=("'$(sql_escape "$location_long")'")
+  location_column_exists "created_at" && { loc_cols+=("\`created_at\`"); loc_vals+=("NOW()"); }
+  location_column_exists "updated_at" && { loc_cols+=("\`updated_at\`"); loc_vals+=("NOW()"); }
+  sql_exec "INSERT INTO locations ($(join_csv "${loc_cols[@]}")) VALUES ($(join_csv "${loc_vals[@]}"));"
   location_id=$(sql "SELECT id FROM locations WHERE short = '$(sql_escape "$location_short")' LIMIT 1;")
 fi
 
 mapfile -t node_columns < <(sql "SHOW COLUMNS FROM nodes;" | awk '{print $1}')
 node_column_exists() {
-  local needle="$1"
-  local value=""
-  for value in "${node_columns[@]}"; do
-    if [ "$value" = "$needle" ]; then
-      return 0
-    fi
-  done
+  local needle="$1" value=""
+  for value in "${node_columns[@]}"; do [ "$value" = "$needle" ] && return 0; done
   return 1
 }
 
-node_uuid=$(cat /proc/sys/kernel/random/uuid)
-token_id=$(random_alnum 16)
-token_value=$(random_alnum 64)
-
-declare -a node_insert_columns=()
-declare -a node_insert_values=()
+declare -a node_cols=() node_vals=()
 append_node_field() {
-  local field="$1"
-  local value="$2"
-  if node_column_exists "$field"; then
-    node_insert_columns+=("$(quote_identifier "$field")")
-    node_insert_values+=("$value")
-  fi
+  local field="$1" value="$2"
+  if node_column_exists "$field"; then node_cols+=("\`${field}\`"); node_vals+=("$value"); fi
 }
 
-append_node_field uuid "'$(sql_escape "$node_uuid")'"
-append_node_field public "1"
-append_node_field name "'$(sql_escape "$node_name")'"
-append_node_field description "'Instalado mediante panel-installer'"
-append_node_field location_id "$location_id"
-append_node_field fqdn "'$(sql_escape "$node_fqdn")'"
-append_node_field scheme "'$(sql_escape "$node_scheme")'"
-append_node_field behind_proxy "$behind_proxy"
-append_node_field maintenance_mode "0"
-append_node_field memory "$node_memory"
+append_node_field uuid               "'$(sql_escape "$node_uuid")'"
+append_node_field public             "1"
+append_node_field name               "'$(sql_escape "$node_name")'"
+append_node_field description        "'Instalado mediante panel-installer'"
+append_node_field location_id        "$location_id"
+append_node_field fqdn               "'$(sql_escape "$node_fqdn")'"
+append_node_field scheme             "'$(sql_escape "$node_scheme")'"
+append_node_field behind_proxy       "$behind_proxy"
+append_node_field maintenance_mode   "0"
+append_node_field memory             "$node_memory"
 append_node_field memory_overallocate "0"
-append_node_field disk "$node_disk"
-append_node_field disk_overallocate "0"
-append_node_field upload_size "$node_upload"
-append_node_field daemon_sftp "$node_sftp_port"
-append_node_field daemon_listen "$node_daemon_port"
-append_node_field daemon_base "'/var/lib/pterodactyl/volumes'"
-append_node_field daemon_token_id "'$(sql_escape "$token_id")'"
-append_node_field daemon_token "'$(sql_escape "$token_value")'"
-append_node_field created_at "NOW()"
-append_node_field updated_at "NOW()"
+append_node_field disk               "$node_disk"
+append_node_field disk_overallocate  "0"
+append_node_field upload_size        "$node_upload"
+append_node_field daemon_sftp        "$node_sftp_port"
+append_node_field daemon_listen      "$node_daemon_port"
+append_node_field daemon_base        "'/var/lib/pterodactyl/volumes'"
+append_node_field daemon_token_id    "'$(sql_escape "$enc_token_id")'"
+append_node_field daemon_token       "'$(sql_escape "$enc_token")'"
+append_node_field created_at         "NOW()"
+append_node_field updated_at         "NOW()"
 
-sql_exec "INSERT INTO nodes ($(join_csv "${node_insert_columns[@]}")) VALUES ($(join_csv "${node_insert_values[@]}"));"
+sql_exec "INSERT INTO nodes ($(join_csv "${node_cols[@]}")) VALUES ($(join_csv "${node_vals[@]}"));"
 node_id=$(sql "SELECT id FROM nodes WHERE uuid = '$(sql_escape "$node_uuid")' LIMIT 1;")
 
-mapfile -t allocation_columns < <(sql "SHOW COLUMNS FROM allocations;" | awk '{print $1}')
-allocation_column_exists() {
-  local needle="$1"
-  local value=""
-  for value in "${allocation_columns[@]}"; do
-    if [ "$value" = "$needle" ]; then
-      return 0
-    fi
-  done
+mapfile -t alloc_columns < <(sql "SHOW COLUMNS FROM allocations;" | awk '{print $1}')
+alloc_column_exists() {
+  local needle="$1" value=""
+  for value in "${alloc_columns[@]}"; do [ "$value" = "$needle" ] && return 0; done
   return 1
 }
 
-declare -a allocation_insert_columns=()
-declare -a allocation_insert_values=()
-append_allocation_field() {
-  local field="$1"
-  local value="$2"
-  if allocation_column_exists "$field"; then
-    allocation_insert_columns+=("$(quote_identifier "$field")")
-    allocation_insert_values+=("$value")
-  fi
+declare -a alloc_cols=() alloc_vals=()
+append_alloc_field() {
+  local field="$1" value="$2"
+  if alloc_column_exists "$field"; then alloc_cols+=("\`${field}\`"); alloc_vals+=("$value"); fi
 }
 
-append_allocation_field node_id "$node_id"
-append_allocation_field ip "'$(sql_escape "$allocation_ip")'"
-append_allocation_field ip_alias "NULL"
-append_allocation_field port "$allocation_port"
-append_allocation_field assigned_to_instance_id "NULL"
-append_allocation_field server_id "NULL"
-append_allocation_field created_at "NOW()"
-append_allocation_field updated_at "NOW()"
+append_alloc_field node_id                  "$node_id"
+append_alloc_field ip                       "'$(sql_escape "$allocation_ip")'"
+append_alloc_field ip_alias                 "NULL"
+append_alloc_field port                     "$allocation_port"
+append_alloc_field assigned_to_instance_id  "NULL"
+append_alloc_field server_id                "NULL"
+append_alloc_field created_at               "NOW()"
+append_alloc_field updated_at               "NOW()"
 
-sql_exec "INSERT INTO allocations ($(join_csv "${allocation_insert_columns[@]}")) VALUES ($(join_csv "${allocation_insert_values[@]}"));"
+sql_exec "INSERT INTO allocations ($(join_csv "${alloc_cols[@]}")) VALUES ($(join_csv "${alloc_vals[@]}"));"
 
 cat > "$WINGS_CONFIG" <<EOF
 debug: false
@@ -289,6 +295,6 @@ systemctl daemon-reload
 systemctl enable --now wings.service
 
 log_success "Wings instalado y registrado."
-echo "Node ID: $node_id"
-echo "UUID: $node_uuid"
-echo "Allocation inicial: $allocation_ip:$allocation_port"
+echo "Node ID   : $node_id"
+echo "UUID      : $node_uuid"
+echo "Allocation: $allocation_ip:$allocation_port"
