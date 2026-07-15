@@ -30,11 +30,9 @@ echo -e "${AZUL}[*] Actualizando sistema e instalando dependencias base...${NC}"
 apt update -y && apt upgrade -y
 apt -y install software-properties-common curl apt-transport-https ca-certificates gnupg certbot python3-certbot-nginx zip unzip tar git
 
-echo -e "${AZUL}[*] Instalando Nginx, MariaDB, Redis y PHP 8.3 de forma nativa...${NC}"
-# CORRECCIÓN: Separar todos los paquetes de PHP para evitar que la consola ignore las llaves
+echo -e "${AZUL}[*] Instalando Nginx, MariaDB, Redis y PHP 8.3 uno por uno...${NC}"
 apt -y install php8.3 php8.3-common php8.3-cli php8.3-gd php8.3-mysql php8.3-mbstring php8.3-bcmath php8.3-xml php8.3-fpm php8.3-curl php8.3-zip mariadb-server nginx redis-server
 
-# Asegurar que PHP-FPM se encienda y registre correctamente
 systemctl enable --now php8.3-fpm
 
 # Instalar Composer
@@ -150,19 +148,17 @@ fi
 ln -s /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
 systemctl restart nginx
 
+# Exportar variables temporales para que el script de Wings las use de inmediato
+echo "$DOMINIO_NGINX" > /tmp/ptero_domain
+echo "$IP_DETECTADA" > /tmp/ptero_ip
+
 echo "--- CREDENCIALES PANEL PTERODACTYL ---" > ~/credenciales_pterodactyl.txt
 echo "URL del Panel: $URL_PANEL" >> ~/credenciales_pterodactyl.txt
-echo "Base de Datos: panel" >> ~/credenciales_pterodactyl.txt
-echo "Usuario DB: pterodactyl" >> ~/credenciales_pterodactyl.txt
-echo "Contraseña DB: $PASS_DB" >> ~/credenciales_pterodactyl.txt
 echo "Usuario de acceso: admin" >> ~/credenciales_pterodactyl.txt
 echo "Email Administrador: $EMAIL_ADMIN" >> ~/credenciales_pterodactyl.txt
 echo "Contraseña Administrador: $PASS_ADMIN" >> ~/credenciales_pterodactyl.txt
 
 clear
 echo -e "${VERDE}==================================================${NC}"
-echo -e "${VERDE}      INSTALACIÓN COMPLETADA EXITOSAMENTE        ${NC}"
+echo -e "${VERDE}      PANEL INSTALADO - PROCEDIENDO A WINGS${NC}"
 echo -e "${VERDE}==================================================${NC}"
-cat ~/credenciales_pterodactyl.txt
-echo -e "${VERDE}==================================================${NC}"
-echo -e "Las credenciales se guardaron en: ~/credenciales_pterodactyl.txt"
