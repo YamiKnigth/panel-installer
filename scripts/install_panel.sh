@@ -148,7 +148,6 @@ fi
 ln -s /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
 systemctl restart nginx
 
-# Exportar variables temporales para que el script de Wings las use de inmediato
 echo "$DOMINIO_NGINX" > /tmp/ptero_domain
 echo "$IP_DETECTADA" > /tmp/ptero_ip
 
@@ -158,7 +157,9 @@ echo "Usuario de acceso: admin" >> ~/credenciales_pterodactyl.txt
 echo "Email Administrador: $EMAIL_ADMIN" >> ~/credenciales_pterodactyl.txt
 echo "Contraseña Administrador: $PASS_ADMIN" >> ~/credenciales_pterodactyl.txt
 
-clear
+echo -e "\n${VERDE}==================================================${NC}"
+echo -e "${VERDE}      FIN DEL SCRIPT DE INSTALACIÓN DEL PANEL    ${NC}"
 echo -e "${VERDE}==================================================${NC}"
-echo -e "${VERDE}      PANEL INSTALADO - PROCEDIENDO A WINGS${NC}"
+cat ~/credenciales_pterodactyl.txt
 echo -e "${VERDE}==================================================${NC}"
+echo -e "${AZUL}Si ves algún error arriba, haz scroll en tu consola para revisarlo.${NC}\n"
