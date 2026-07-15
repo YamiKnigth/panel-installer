@@ -121,6 +121,7 @@ install_panel_crontab() {
 
 log_info "Actualizando índices de paquetes..."
 apt-get update -y
+ensure_official_php_repository
 php_version=$(detect_available_php_version)
 php_fpm_service=$(php_fpm_service_name "$php_version")
 php_fpm_socket=$(php_fpm_socket_path "$php_version")

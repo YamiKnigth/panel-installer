@@ -68,6 +68,20 @@ assert_supported_panel_os() {
   fi
 }
 
+ensure_official_php_repository() {
+  local matches=""
+
+  matches="$(apt-cache search '^php8\.[23]-fpm$' 2>/dev/null || true)"
+  if [ -n "$matches" ]; then
+    return
+  fi
+
+  log_info "No se detectaron paquetes PHP 8.2/8.3. Habilitando el componente oficial universe de Ubuntu..."
+  apt-get install -y software-properties-common
+  add-apt-repository -y universe
+  apt-get update -y
+}
+
 random_alnum() {
   local length="$1"
   local value=""
@@ -189,7 +203,7 @@ detect_available_php_version() {
   local candidate=""
 
   for version in 8.3 8.2; do
-    candidate=$(apt-cache policy "php${version}-fpm" 2>/dev/null | awk '/Candidate:/ {print $2; exit}')
+    candidate="$(apt-cache policy "php${version}-fpm" 2>/dev/null | awk '/Candidate:/ {print $2; exit}' || true)"
     if [ -n "$candidate" ] && [ "$candidate" != "(none)" ]; then
       printf '%s' "$version"
       return
