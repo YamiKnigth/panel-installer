@@ -22,7 +22,7 @@ El menú principal expone estas operaciones:
 Además:
 
 - Detecta varias IPs de la instancia y te deja elegir la correcta, algo clave en Multipass sobre macOS y Windows.
-- Instala PHP 8.3, MariaDB, Redis y Nginx desde los repositorios oficiales de Ubuntu 24.04.
+- Instala PHP 8.2 o 8.3, MariaDB, Redis y Nginx desde los repositorios oficiales de Ubuntu 24.04, alineado con la documentación oficial del panel.
 - Genera credenciales aleatorias para el panel y la base de datos.
 - Registra Wings directamente en la base de datos del panel para evitar fallos por proxy o 404 al usar la API web.
 - Genera respaldos reales con mysqldump, .env y config.yml de Wings.
@@ -154,7 +154,7 @@ sudo bash install.sh
 La opción de instalación del panel hace esto:
 
 - Muestra todas las IPs IPv4 globales detectadas en la instancia.
-- Instala Nginx, MariaDB, Redis, Composer y PHP desde los repositorios nativos, priorizando PHP 8.3 cuando está disponible.
+- Instala Nginx, MariaDB, Redis, Composer y PHP 8.2 o 8.3 desde los repositorios nativos de Ubuntu 24.04.
 - Descarga la última release del panel.
 - Configura la base de datos local del panel.
 - Genera el usuario admin inicial.

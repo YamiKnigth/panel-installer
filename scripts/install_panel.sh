@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/common.sh"
 
 require_root
 ensure_noninteractive
+assert_supported_panel_os
 
 if panel_installed; then
   log_warn "Ya se detectó una instalación del panel en $PANEL_DIR."
@@ -45,7 +46,7 @@ php_fpm_service=$(php_fpm_service_name "$php_version")
 php_fpm_socket=$(php_fpm_socket_path "$php_version")
 
 if [ "$php_version" != "8.3" ]; then
-  log_warn "PHP 8.3 no está disponible en esta imagen; se usará PHP $php_version desde los repositorios nativos."
+  log_warn "PHP 8.3 no está disponible en esta imagen Ubuntu 24.04; se usará PHP $php_version, que sigue siendo compatible con la documentación oficial del panel."
 fi
 
 log_info "Instalando dependencias nativas del sistema..."

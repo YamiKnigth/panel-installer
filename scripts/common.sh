@@ -44,6 +44,30 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+os_release_value() {
+  local key="$1"
+
+  if [ ! -f /etc/os-release ]; then
+    return 1
+  fi
+
+  sed -n "s/^${key}=//p" /etc/os-release | head -n 1 | tr -d '"'
+}
+
+assert_supported_panel_os() {
+  local distro version codename
+
+  distro="$(os_release_value ID || true)"
+  version="$(os_release_value VERSION_ID || true)"
+  codename="$(os_release_value VERSION_CODENAME || true)"
+
+  if [ "$distro" != "ubuntu" ] || [ "$version" != "24.04" ]; then
+    log_error "Este instalador del panel está diseñado para Ubuntu 24.04. Sistema detectado: ${distro:-desconocido} ${version:-desconocido} ${codename:-}."
+    log_error "La documentación oficial de Pterodactyl para el panel requiere PHP 8.2 o 8.3; si tu imagen no es Ubuntu 24.04 estable, los paquetes nativos pueden no existir."
+    exit 1
+  fi
+}
+
 random_alnum() {
   local length="$1"
   local value=""
@@ -162,15 +186,19 @@ choose_ip_interactively() {
 
 detect_available_php_version() {
   local version=""
+  local candidate=""
 
-  for version in 8.3 8.4 8.2; do
-    if apt-cache show "php${version}-fpm" >/dev/null 2>&1; then
+  for version in 8.3 8.2; do
+    candidate=$(apt-cache policy "php${version}-fpm" 2>/dev/null | awk '/Candidate:/ {print $2; exit}')
+    if [ -n "$candidate" ] && [ "$candidate" != "(none)" ]; then
       printf '%s' "$version"
       return
     fi
   done
 
-  log_error "No se encontró una versión soportada de PHP-FPM en los repositorios nativos."
+  log_error "No se encontró PHP 8.2 ni PHP 8.3 en los repositorios APT nativos de esta instancia."
+  log_error "Según la documentación oficial de Pterodactyl, el panel requiere PHP 8.2 o 8.3."
+  log_error "Verifica que la instancia sea Ubuntu 24.04 estable y no una imagen distinta o de desarrollo."
   exit 1
 }
 
@@ -189,7 +217,7 @@ resolve_panel_php_version() {
     return
   fi
 
-  for version in 8.4 8.3 8.2; do
+  for version in 8.3 8.2; do
     if dpkg -s "php${version}-fpm" >/dev/null 2>&1; then
       printf '%s' "$version"
       return
