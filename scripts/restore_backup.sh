@@ -10,6 +10,8 @@ require_root
 ensure_noninteractive
 ensure_packages unzip curl mariadb-client
 
+php_fpm_service=$(php_fpm_service_name)
+
 backup_source=$(prompt_required "Ruta local o URL del respaldo .zip: ")
 work_dir=$(mktemp -d)
 archive_path="$work_dir/backup.zip"
@@ -66,7 +68,7 @@ if [ "$restore_panel" = "yes" ]; then
     php artisan optimize:clear || true
   fi
 
-  systemctl restart nginx php8.3-fpm pteroq.service 2>/dev/null || true
+  systemctl restart nginx "$php_fpm_service" pteroq.service 2>/dev/null || true
 fi
 
 if [ "$restore_wings" = "yes" ]; then

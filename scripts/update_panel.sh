@@ -9,6 +9,8 @@ source "$SCRIPT_DIR/common.sh"
 require_root
 ensure_noninteractive
 
+php_fpm_service=$(php_fpm_service_name)
+
 if ! panel_installed; then
   log_error "No se encontró una instalación del panel en $PANEL_DIR."
   exit 1
@@ -48,7 +50,7 @@ chmod -R 755 "$PANEL_DIR/storage" "$PANEL_DIR/bootstrap/cache"
 php artisan queue:restart || true
 php artisan up || true
 
-systemctl restart php8.3-fpm nginx pteroq.service
+systemctl restart "$php_fpm_service" nginx pteroq.service
 trap - EXIT
 rm -rf "$tmp_dir"
 

@@ -154,7 +154,7 @@ sudo bash install.sh
 La opción de instalación del panel hace esto:
 
 - Muestra todas las IPs IPv4 globales detectadas en la instancia.
-- Instala Nginx, MariaDB, Redis, Composer y PHP 8.3 con paquetes explícitos.
+- Instala Nginx, MariaDB, Redis, Composer y PHP desde los repositorios nativos, priorizando PHP 8.3 cuando está disponible.
 - Descarga la última release del panel.
 - Configura la base de datos local del panel.
 - Genera el usuario admin inicial.

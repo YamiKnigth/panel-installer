@@ -139,12 +139,12 @@ choose_ip_interactively() {
     exit 1
   fi
 
-  echo "$prompt_message"
+  echo "$prompt_message" >&2
   local index=1
   local entry=""
   for entry in "${candidates[@]}"; do
     IFS='|' read -r iface cidr addr <<< "$entry"
-    echo "  $index) $addr ($iface - $cidr)"
+    echo "  $index) $addr ($iface - $cidr)" >&2
     index=$((index + 1))
   done
 
@@ -158,6 +158,57 @@ choose_ip_interactively() {
     fi
     log_warn "Selección inválida."
   done
+}
+
+detect_available_php_version() {
+  local version=""
+
+  for version in 8.3 8.4 8.2; do
+    if apt-cache show "php${version}-fpm" >/dev/null 2>&1; then
+      printf '%s' "$version"
+      return
+    fi
+  done
+
+  log_error "No se encontró una versión soportada de PHP-FPM en los repositorios nativos."
+  exit 1
+}
+
+resolve_panel_php_version() {
+  local version="${1:-}"
+
+  if [ -n "$version" ]; then
+    printf '%s' "$version"
+    return
+  fi
+
+  load_runtime_config
+
+  if [ -n "${PANEL_PHP_VERSION:-}" ]; then
+    printf '%s' "$PANEL_PHP_VERSION"
+    return
+  fi
+
+  for version in 8.4 8.3 8.2; do
+    if dpkg -s "php${version}-fpm" >/dev/null 2>&1; then
+      printf '%s' "$version"
+      return
+    fi
+  done
+
+  detect_available_php_version
+}
+
+php_fpm_service_name() {
+  local version
+  version=$(resolve_panel_php_version "${1:-}")
+  printf 'php%s-fpm' "$version"
+}
+
+php_fpm_socket_path() {
+  local version
+  version=$(resolve_panel_php_version "${1:-}")
+  printf '/run/php/php%s-fpm.sock' "$version"
 }
 
 save_runtime_config() {
