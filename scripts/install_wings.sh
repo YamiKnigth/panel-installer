@@ -143,8 +143,11 @@ fi
 
 log_info "Descargando Wings..."
 mkdir -p /etc/pterodactyl /var/log/pterodactyl /var/lib/pterodactyl/volumes /var/run/wings
-curl -fsSL https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64 -o /usr/local/bin/wings
-chmod +x /usr/local/bin/wings
+
+wings_arch="amd64"
+[ "$(uname -m)" = "aarch64" ] && wings_arch="arm64"
+curl -fsSL "https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_${wings_arch}" -o /usr/local/bin/wings
+chmod u+x /usr/local/bin/wings
 
 node_uuid=$(cat /proc/sys/kernel/random/uuid)
 token_id=$(random_alnum 16)
@@ -434,6 +437,10 @@ append_alloc_field updated_at               "NOW()"
 
 sql_exec "INSERT INTO allocations ($(join_csv "${alloc_cols[@]}")) VALUES ($(join_csv "${alloc_vals[@]}"));"
 
+# A partir de aquí el nodo/allocation ya son válidos en la base de datos; un fallo
+# posterior al levantar el servicio wings no debe revertir estas filas.
+install_succeeded="yes"
+
 cat > "$WINGS_CONFIG" <<EOF
 debug: false
 uuid: $node_uuid
@@ -466,23 +473,49 @@ cat > /etc/systemd/system/wings.service <<EOF
 Description=Pterodactyl Wings Daemon
 After=docker.service
 Requires=docker.service
+PartOf=docker.service
 
 [Service]
 User=root
 WorkingDirectory=/etc/pterodactyl
 LimitNOFILE=4096
+PIDFile=/var/run/wings/daemon.pid
 ExecStart=/usr/local/bin/wings
 Restart=on-failure
+StartLimitInterval=180
+StartLimitBurst=30
 RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+if command_exists ufw && ufw status | grep -q "Status: active"; then
+  log_info "Abriendo puertos en ufw: $node_daemon_port/tcp, $node_sftp_port/tcp, $allocation_port/tcp y udp..."
+  ufw allow "$node_daemon_port"/tcp
+  ufw allow "$node_sftp_port"/tcp
+  ufw allow "$allocation_port"/tcp
+  ufw allow "$allocation_port"/udp
+else
+  log_info "ufw no está activo; no se agregaron reglas de firewall. Verifica manualmente que los puertos $node_daemon_port (API), $node_sftp_port (SFTP) y $allocation_port (allocation) estén accesibles."
+fi
+
+if [ "$node_scheme" = "https" ]; then
+  log_warn "Nodo configurado con esquema https: Wings necesita un certificado SSL válido para '$node_fqdn' (ver https://pterodactyl.io/wings/1.0/installing.html#ssl-certificate-configuration). El panel-installer no genera este certificado automáticamente; configúralo antes de que el nodo funcione correctamente."
+fi
+
 systemctl daemon-reload
 systemctl enable --now wings.service
 
-install_succeeded="yes"
+log_info "Verificando que Wings arrancó correctamente..."
+sleep 3
+if ! systemctl is-active --quiet wings.service; then
+  log_error "El servicio wings no quedó activo. Últimas líneas del log:"
+  journalctl -u wings.service -n 40 --no-pager || true
+  log_error "Revisa /etc/pterodactyl/config.yml y el log anterior antes de reintentar. El nodo quedó registrado en la base de datos pero Wings no está corriendo."
+  exit 1
+fi
+log_success "Wings está activo y corriendo (systemctl is-active wings.service)."
 
 log_success "Wings instalado y registrado."
 echo "Node ID   : $node_id"
