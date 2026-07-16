@@ -156,8 +156,8 @@ ensure_packages() {
   fi
 
   log_info "Instalando dependencias necesarias: ${missing[*]}"
-  apt-get update -y
-  apt-get install -y "${missing[@]}"
+  apt-get update -y >/dev/null
+  apt-get install -y "${missing[@]}" >/dev/null
 }
 
 sql_escape() {
