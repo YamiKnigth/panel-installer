@@ -198,16 +198,21 @@ sql_exec() {
 
 join_csv() { local IFS=,; echo "$*"; }
 
-# --- Cifrado de tokens: reproduce el cast 'encrypted' de Eloquent (Crypt::encryptString) ---
+# --- Cifrado de tokens: Node::getDecryptedKey() llama al Encrypter genérico sobre
+# daemon_token (NO usa el cast 'encrypted' de Eloquent ni encryptString/decryptString).
+# El helper encrypt()/decrypt() genérico SÍ serializa el valor antes de cifrar
+# (a diferencia de encryptString, que no serializa) — hay que igualar ese formato o
+# el panel revienta con "unserialize(): Error at offset 0" al decodificar el nodo.
+# daemon_token_id, en cambio, se guarda en texto plano (no se cifra ni se decodifica
+# en ningún punto del modelo).
 #
-# Camino local: bootea la app Laravel real del panel e invoca Crypt::encryptString/decryptString
+# Camino local: bootea la app Laravel real del panel e invoca Crypt::encrypt/decrypt
 # directamente, garantizando compatibilidad exacta con la versión de Laravel/cifrado instalada.
 #
 # Camino remoto (respaldo): reimplementa el formato de Illuminate\Encryption\Encrypter a mano.
 # IMPORTANTE: el MAC es hash_hmac('sha256', $iv.$value, $key) en hexadecimal plano (sin base64,
-# sin flag "raw"), y el valor NO se serializa (Crypt::encryptString no serializa, a diferencia
-# del helper encrypt() genérico). Una implementación previa de este script tenía ambos errores,
-# lo que hacía que el panel rechazara el token con "MAC is invalid" al leer el nodo.
+# sin flag "raw"), y el valor SÍ se serializa con serialize()/unserialize() antes/después del
+# cifrado (formato del helper encrypt() genérico, no el de encryptString).
 
 if [ "$use_local_crypto" = "yes" ]; then
   crypto_script="$work_dir/laravel_crypto.php"
@@ -222,9 +227,9 @@ require '$PANEL_DIR/vendor/autoload.php';
 
 try {
     if (\$mode === 'encrypt') {
-        echo Illuminate\Support\Facades\Crypt::encryptString(\$in);
+        echo Illuminate\Support\Facades\Crypt::encrypt(\$in);
     } else {
-        echo Illuminate\Support\Facades\Crypt::decryptString(\$in);
+        echo Illuminate\Support\Facades\Crypt::decrypt(\$in);
     }
 } catch (Throwable \$e) {
     fwrite(STDERR, \$e->getMessage());
@@ -253,8 +258,9 @@ if (strlen($appKey) !== 32) {
 }
 
 function laravel_encrypt(string $value, string $key): string {
+    $serialized = serialize($value);
     $iv = random_bytes(16);
-    $encrypted = openssl_encrypt($value, 'AES-256-CBC', $key, 0, $iv);
+    $encrypted = openssl_encrypt($serialized, 'AES-256-CBC', $key, 0, $iv);
     if ($encrypted === false) {
         fwrite(STDERR, 'openssl_encrypt falló: ' . openssl_error_string() . PHP_EOL);
         exit(1);
@@ -280,7 +286,12 @@ function laravel_decrypt(string $payload, string $key): string {
         fwrite(STDERR, 'openssl_decrypt falló: ' . openssl_error_string() . PHP_EOL);
         exit(1);
     }
-    return $decrypted;
+    $value = unserialize($decrypted);
+    if ($value === false && $decrypted !== serialize(false)) {
+        fwrite(STDERR, 'unserialize falló al decodificar el valor.' . PHP_EOL);
+        exit(1);
+    }
+    return $value;
 }
 
 $mode = $argv[1];
