@@ -161,7 +161,34 @@ ensure_packages() {
 }
 
 sql_escape() {
-  printf "%s" "$1" | sed "s/'/''/g"
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/'\''/'\'''\''/g'
+}
+
+panel_db_reachable() {
+  local db_host="$1" db_port="$2" db_name="$3" db_user="$4" db_password="$5"
+  local error_output=""
+
+  if [ -n "$db_password" ]; then
+    error_output=$(MYSQL_PWD="$db_password" mysql -N -s -h "$db_host" -P "$db_port" -u "$db_user" "$db_name" -e "SELECT 1;" 2>&1)
+  else
+    error_output=$(mysql -N -s -h "$db_host" -P "$db_port" -u "$db_user" "$db_name" -e "SELECT 1;" 2>&1)
+  fi
+
+  if [ $? -eq 0 ]; then
+    return 0
+  fi
+
+  if printf '%s' "$error_output" | grep -qi "access denied"; then
+    log_error "Acceso denegado a MariaDB para el usuario '$db_user'. Verifica usuario/contraseña."
+  elif printf '%s' "$error_output" | grep -qi "unknown database"; then
+    log_error "La base de datos '$db_name' no existe en $db_host:$db_port."
+  elif printf '%s' "$error_output" | grep -qiE "can't connect|connection refused|no route to host|timed out"; then
+    log_error "No se pudo conectar a MariaDB en $db_host:$db_port. Verifica conectividad de red y que el servicio esté escuchando."
+  else
+    log_error "Fallo al validar la conexión a la base de datos del panel: $error_output"
+  fi
+
+  return 1
 }
 
 collect_ip_candidates() {
@@ -360,7 +387,61 @@ EOF
     zip -rq "$backup_zip" .
   )
   rm -rf "$backup_dir"
+
+  if ! unzip -tq "$backup_zip" >/dev/null 2>&1; then
+    log_error "El archivo de respaldo generado no pasó la verificación de integridad: $backup_zip"
+    rm -f "$backup_zip"
+    exit 1
+  fi
+
+  rotate_old_backups "$context_label"
   printf '%s' "$backup_zip"
+}
+
+create_wings_only_backup_archive() {
+  local context_label="$1"
+  local timestamp backup_dir backup_zip
+
+  timestamp=$(date +%F_%H-%M-%S)
+  backup_dir="/tmp/pterodactyl_backup_${context_label}_wings_${timestamp}"
+  backup_zip="/tmp/pterodactyl_backup_${context_label}_wings_${timestamp}.zip"
+  mkdir -p "$backup_dir"
+
+  cp "$WINGS_CONFIG" "$backup_dir/wings.config.yml"
+  [ -f "$RUNTIME_FILE" ] && cp "$RUNTIME_FILE" "$backup_dir/runtime.conf"
+
+  cat > "$backup_dir/RESTORE.txt" <<EOF
+Contenido del respaldo:
+- wings.config.yml: configuración de Wings
+- runtime.conf: metadatos locales del instalador, si aplica
+EOF
+
+  ensure_packages zip unzip
+  (
+    cd "$backup_dir"
+    zip -rq "$backup_zip" .
+  )
+  rm -rf "$backup_dir"
+
+  if ! unzip -tq "$backup_zip" >/dev/null 2>&1; then
+    log_error "El archivo de respaldo generado no pasó la verificación de integridad: $backup_zip"
+    rm -f "$backup_zip"
+    exit 1
+  fi
+
+  rotate_old_backups "${context_label}_wings"
+  printf '%s' "$backup_zip"
+}
+
+rotate_old_backups() {
+  local context_label="$1"
+  local keep="${BACKUP_RETENTION_COUNT:-5}"
+  local old=""
+
+  mapfile -t old < <(ls -1t /tmp/pterodactyl_backup_"${context_label}"_*.zip 2>/dev/null | tail -n +$((keep + 1)))
+  for old_file in "${old[@]:-}"; do
+    [ -n "$old_file" ] && [ -f "$old_file" ] && rm -f "$old_file"
+  done
 }
 
 upload_backup_archive() {

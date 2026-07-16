@@ -28,6 +28,14 @@ else
   cp "$backup_source" "$archive_path"
 fi
 
+if ! unzip -tq "$archive_path" >/dev/null 2>&1; then
+  log_error "El archivo de respaldo no pasó la verificación de integridad (zip corrupto o incompleto)."
+  exit 1
+fi
+
+echo -e "${AZUL}Contenido del respaldo:${NC}"
+unzip -l "$archive_path"
+
 unzip -oq "$archive_path" -d "$work_dir/extracted"
 
 restore_panel="no"
@@ -41,6 +49,18 @@ if [ -f "$work_dir/extracted/wings.config.yml" ]; then
   restore_wings="yes"
 fi
 
+echo
+log_warn "Esta operación sobrescribirá lo siguiente si está presente en el respaldo:"
+[ -f "$work_dir/extracted/panel.env" ] && echo "  - $PANEL_DIR/.env"
+[ -f "$work_dir/extracted/panel.sql" ] && echo "  - La base de datos actual del panel (se reemplaza por completo)"
+[ -f "$work_dir/extracted/wings.config.yml" ] && echo "  - $WINGS_CONFIG"
+[ -f "$work_dir/extracted/runtime.conf" ] && echo "  - $RUNTIME_FILE"
+
+if ! confirm_action "¿Continuar con la restauración?"; then
+  log_info "Restauración cancelada por el usuario."
+  exit 0
+fi
+
 if [ "$restore_panel" = "yes" ]; then
   if ! panel_installed; then
     log_warn "No existe una instalación del panel. La restauración de BD/.env asume que el panel ya fue instalado previamente."
@@ -52,6 +72,11 @@ if [ "$restore_panel" = "yes" ]; then
   fi
 
   load_panel_db_credentials
+
+  if [ -f "$PANEL_DIR/artisan" ]; then
+    cd "$PANEL_DIR"
+    php artisan down || true
+  fi
 
   if [ -f "$work_dir/extracted/panel.sql" ]; then
     log_info "Restaurando base de datos del panel..."
@@ -72,9 +97,26 @@ if [ "$restore_panel" = "yes" ]; then
 fi
 
 if [ "$restore_wings" = "yes" ]; then
+  restored_uuid=$(sed -n 's/^uuid:[[:space:]]*//p' "$work_dir/extracted/wings.config.yml" | head -n 1 | tr -d "\"'")
+
+  node_match=""
+  if [ -n "$restored_uuid" ] && panel_installed; then
+    load_panel_db_credentials
+    if panel_db_reachable "$PANEL_DB_HOST" "$PANEL_DB_PORT" "$PANEL_DB_NAME" "$PANEL_DB_USER" "$PANEL_DB_PASSWORD" 2>/dev/null; then
+      node_match=$(run_panel_mysql_single "SELECT id FROM nodes WHERE uuid = '$(sql_escape "$restored_uuid")' LIMIT 1;" 2>/dev/null || true)
+    fi
+  fi
+
   mkdir -p /etc/pterodactyl
   cp "$work_dir/extracted/wings.config.yml" "$WINGS_CONFIG"
-  systemctl restart wings.service 2>/dev/null || true
+  chmod 600 "$WINGS_CONFIG"
+
+  if [ -n "$restored_uuid" ] && [ -z "$node_match" ]; then
+    log_warn "El UUID del nodo restaurado ($restored_uuid) no existe en la base de datos actual del panel."
+    log_warn "Wings no se iniciará con esta configuración: el panel no reconocerá el token. Vuelve a ejecutar install_wings.sh para registrar un nodo nuevo."
+  else
+    systemctl restart wings.service 2>/dev/null || true
+  fi
 fi
 
 if [ -f "$work_dir/extracted/runtime.conf" ]; then

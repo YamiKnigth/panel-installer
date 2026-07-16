@@ -17,13 +17,15 @@ fi
 pre_backup=$(create_backup_archive "yes" "pre_update_wings")
 log_success "Respaldo previo generado: $pre_backup"
 
-if upload_output=$(upload_backup_archive "$pre_backup"); then
-  upload_url=$(printf '%s\n' "$upload_output" | head -n 1)
-  if [[ "$upload_url" =~ ^https?:// ]]; then
-    log_success "Respaldo remoto disponible en: $upload_url"
+if confirm_action "¿Subir el respaldo previo a bashupload.com? (host público, sin autenticación)"; then
+  if upload_output=$(upload_backup_archive "$pre_backup"); then
+    upload_url=$(printf '%s\n' "$upload_output" | head -n 1)
+    if [[ "$upload_url" =~ ^https?:// ]]; then
+      log_success "Respaldo remoto disponible en: $upload_url"
+    fi
+  else
+    log_warn "La subida automática del respaldo falló. El archivo local permanece en: $pre_backup"
   fi
-else
-  log_warn "La subida automática del respaldo falló. El archivo local permanece en: $pre_backup"
 fi
 
 if ! command_exists docker; then
@@ -32,10 +34,30 @@ if ! command_exists docker; then
 fi
 
 systemctl enable --now docker
+
+tmp_binary=$(mktemp)
+trap 'rm -f "$tmp_binary"' EXIT
+
+log_info "Descargando la última versión de Wings..."
+curl -fsSL https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64 -o "$tmp_binary"
+chmod +x "$tmp_binary"
+
+if ! "$tmp_binary" --version >/dev/null 2>&1; then
+  log_error "El binario descargado de Wings no pasó la verificación (--version falló). No se detendrá el servicio actual."
+  exit 1
+fi
+
+log_info "Binario verificado. Deteniendo Wings para reemplazarlo..."
 systemctl stop wings.service
-curl -fsSL https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64 -o /usr/local/bin/wings
-chmod +x /usr/local/bin/wings
+mv "$tmp_binary" /usr/local/bin/wings
+trap - EXIT
+
 systemctl daemon-reload
 systemctl start wings.service
+
+if ! systemctl is-active --quiet wings.service; then
+  log_error "Wings no quedó activo tras la actualización. Revisa: journalctl -u wings -n 50"
+  exit 1
+fi
 
 log_success "Wings actualizado correctamente."

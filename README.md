@@ -115,6 +115,18 @@ multipass list
 multipass shell ptero-panel
 ```
 
+## Instancia ligera para pruebas rápidas (smoke test)
+
+Si solo quieres validar que el instalador funciona de punta a punta (panel + Wings en una sola instancia) sin dedicar los recursos de una instancia de producción, puedes crear una instancia combinada más pequeña:
+
+```bash
+multipass launch 24.04 --name ptero-test --cpus 2 --memory 2G --disk 5G
+```
+
+Instala primero el panel y luego Wings en modo "panel local" dentro de esa misma instancia (opción 1 al preguntar por el tipo de panel).
+
+**Advertencia:** 2 GB de RAM y 5 GB de disco son un límite muy ajustado para correr simultáneamente MariaDB, PHP-FPM, Redis, Nginx, Docker y Wings. Esta configuración es únicamente para pruebas de humo cortas (crear el panel, registrar un nodo, confirmar que arranca) — no la uses para producción ni para pruebas de carga.
+
 ## Preparación recomendada dentro de Ubuntu 24.04
 
 Actualiza la instancia antes de correr el instalador:
