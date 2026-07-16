@@ -23,6 +23,12 @@ fi
 systemctl enable --now docker
 ensure_packages curl mariadb-client unzip
 
+log_info "Descargando imagen de instalación de eggs (ghcr.io/pterodactyl/installers:alpine)..."
+if ! docker pull ghcr.io/pterodactyl/installers:alpine; then
+  log_error "No se pudo descargar ghcr.io/pterodactyl/installers:alpine. Sin esta imagen, la instalación de cualquier servidor se quedará colgada indefinidamente (Wings no puede crear el contenedor de instalación). Verifica conectividad a ghcr.io y reintenta."
+  exit 1
+fi
+
 echo "1) Panel local en esta misma instancia"
 echo "2) Panel remoto en otra instancia/servidor"
 read -r -p "Selecciona el tipo de panel [1-2]: " panel_mode
