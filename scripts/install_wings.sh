@@ -299,14 +299,12 @@ fi
 
 log_info "Cifrando tokens ($([ "$use_local_crypto" = "yes" ] && echo "vía Laravel local" || echo "vía cifrado manual"))..."
 
-enc_token_id=$(encrypt_token "$token_id")
 enc_token=$(encrypt_token "$token_value")
 
 log_info "Verificando cifrado mediante prueba de round-trip..."
-roundtrip_token_id=$(decrypt_token "$enc_token_id")
 roundtrip_token=$(decrypt_token "$enc_token")
 
-if [ "$roundtrip_token_id" != "$token_id" ] || [ "$roundtrip_token" != "$token_value" ]; then
+if [ "$roundtrip_token" != "$token_value" ]; then
   log_error "El cifrado de tokens no superó la verificación de round-trip; abortando antes de tocar la base de datos."
   exit 1
 fi
@@ -382,7 +380,7 @@ append_node_field upload_size        "$node_upload"
 append_node_field daemon_sftp        "$node_sftp_port"
 append_node_field daemon_listen      "$node_daemon_port"
 append_node_field daemon_base        "'/var/lib/pterodactyl/volumes'"
-append_node_field daemon_token_id    "'$(sql_escape "$enc_token_id")'"
+append_node_field daemon_token_id    "'$(sql_escape "$token_id")'"
 append_node_field daemon_token       "'$(sql_escape "$enc_token")'"
 append_node_field created_at         "NOW()"
 append_node_field updated_at         "NOW()"
@@ -395,7 +393,7 @@ log_info "Verificando que los tokens almacenados en la base de datos coincidan c
 stored_token_id=$(sql "SELECT daemon_token_id FROM nodes WHERE id = $node_id;")
 stored_token=$(sql "SELECT daemon_token FROM nodes WHERE id = $node_id;")
 
-if [ "$stored_token_id" != "$enc_token_id" ] || [ "$stored_token" != "$enc_token" ]; then
+if [ "$stored_token_id" != "$token_id" ] || [ "$stored_token" != "$enc_token" ]; then
   log_error "Los tokens almacenados en la base de datos no coinciden con los generados (posible corrupción al insertar). Abortando y revirtiendo."
   exit 1
 fi
