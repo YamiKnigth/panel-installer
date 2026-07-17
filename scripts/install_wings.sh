@@ -150,8 +150,7 @@ fi
 log_info "Descargando Wings..."
 mkdir -p /etc/pterodactyl /var/log/pterodactyl /var/lib/pterodactyl/volumes /var/run/wings
 
-wings_arch="amd64"
-[ "$(uname -m)" = "aarch64" ] && wings_arch="arm64"
+wings_arch=$(wings_binary_arch)
 curl -fsSL "https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_${wings_arch}" -o /usr/local/bin/wings
 chmod u+x /usr/local/bin/wings
 

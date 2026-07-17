@@ -13,7 +13,7 @@ El menú principal expone estas operaciones:
 
 1. Instalar Panel Pterodactyl.
 2. Instalar Pterodactyl Wings.
-3. Crear respaldo y subirlo a bashupload.com.
+3. Crear respaldo (solo Panel, Panel + Wings, o solo Wings).
 4. Actualizar Panel Pterodactyl con respaldo previo.
 5. Actualizar Pterodactyl Wings con respaldo previo.
 6. Restaurar un respaldo generado por esta herramienta.
@@ -23,10 +23,13 @@ Además:
 
 - Detecta varias IPs de la instancia y te deja elegir la correcta, algo clave en Multipass sobre macOS y Windows.
 - Instala PHP 8.2 o 8.3, MariaDB, Redis y Nginx desde los repositorios oficiales de Ubuntu 24.04, alineado con la documentación oficial del panel.
-- Genera credenciales aleatorias para el panel y la base de datos.
-- Registra Wings directamente en la base de datos del panel para evitar fallos por proxy o 404 al usar la API web.
-- Genera respaldos reales con mysqldump, .env y config.yml de Wings.
-- Permite restaurar esos respaldos desde una URL o desde un archivo zip local.
+- Genera credenciales aleatorias para el panel y la base de datos, guardadas en `/root/credenciales_pterodactyl.txt`.
+- Registra Wings directamente en la base de datos del panel (bypass del API HTTP) para evitar fallos por proxy o 404, cifrando el `daemon_token` con el mismo formato que usa el modelo `Node` del panel para poder decodificarlo.
+- Pre-descarga la imagen `ghcr.io/pterodactyl/installers:alpine` que Wings necesita para instalar cualquier servidor — sin ella, la creación de servidores se queda "instalando" indefinidamente.
+- Abre en `ufw` (si está activo) los puertos de la API de Wings, SFTP y la primera allocation creada.
+- Verifica que el servicio `wings` haya quedado activo tras instalarlo/actualizarlo; si falla, muestra el log y aborta en vez de reportar éxito falso.
+- Genera respaldos reales con mysqldump, `.env` del panel y `config.yml` de Wings; la subida a un host público es siempre opcional y se confirma de forma interactiva.
+- Permite restaurar esos respaldos desde una URL o desde un archivo zip local, verificando primero que el UUID del nodo restaurado siga existiendo en la base de datos actual del panel antes de reiniciar Wings.
 
 ## Requisitos
 
@@ -177,52 +180,50 @@ La opción de instalación del panel hace esto:
 
 La opción de instalación de Wings permite:
 
-- Reutilizar el panel local si existe en la misma instancia.
-- O registrar un nodo remoto pidiendo la URL del panel y credenciales de MariaDB.
-- Instalar Docker si no existe.
-- Insertar el nodo y la allocation directamente en MariaDB.
-- Generar /etc/pterodactyl/config.yml.
-- Crear y habilitar el servicio systemd de Wings.
+- Reutilizar el panel local si existe en la misma instancia (cifra los tokens invocando la app Laravel real del panel para garantizar compatibilidad byte a byte).
+- O registrar un nodo remoto pidiendo la URL del panel, el `APP_KEY` y credenciales de MariaDB (cifra los tokens con una reimplementación manual del formato de `Illuminate\Encryption\Encrypter`).
+- Instalar Docker si no existe, y descargar la imagen `ghcr.io/pterodactyl/installers:alpine` necesaria para instalar servidores.
+- Detectar arquitectura (amd64/arm64) al descargar el binario de Wings.
+- Insertar el nodo y la allocation directamente en MariaDB, verificando por round-trip que el token cifrado y lo que MySQL realmente guardó coinciden byte a byte; si algo no cuadra, revierte la inserción antes de tocar `config.yml` o `systemd`.
+- Generar `/etc/pterodactyl/config.yml`.
+- Abrir puertos en `ufw` (si está activo) para la API de Wings, SFTP y la allocation.
+- Crear, habilitar y **verificar** que el servicio systemd de Wings quedó activo (si no, muestra `journalctl -u wings` y aborta).
 
 Importante para Wings remoto:
 
 - El nodo debe poder conectarse por red a MariaDB del panel.
 - Necesitas un usuario con permisos sobre la base de datos del panel.
-- Debes indicar la URL pública real del panel.
+- Debes indicar la URL pública real del panel y su `APP_KEY` completo (está en `/var/www/pterodactyl/.env`).
+
+Si el nodo se configura con esquema `https`, Wings necesita su propio certificado SSL válido para su FQDN — el instalador no lo genera automáticamente, solo lo advierte.
 
 ### Actualizar Panel y Wings
 
-Las opciones de actualización siempre generan un respaldo previo. Ese respaldo:
+Ambas opciones primero comparan la versión instalada contra la última release de GitHub (`config/app.php` del panel, `wings --version` para Wings) y **no hacen nada** si ya estás en la última versión — ni backup, ni descarga.
 
-- Se guarda primero en /tmp.
-- Luego intenta subirse a bashupload.com.
+Si hay una versión nueva, generan un respaldo previo en `/tmp` y preguntan de forma interactiva si quieres subirlo a un host público antes de continuar. Si la subida falla o se omite, la actualización sigue igual con el archivo local ya generado.
 
-Si la subida falla, la actualización puede continuar con el archivo local ya generado.
+`update_wings.sh` detecta arquitectura (amd64/arm64) igual que la instalación, verifica el binario nuevo (`--version`) antes de detener el servicio actual, y confirma que Wings quedó activo después de reemplazarlo.
 
 ### Crear respaldos manuales
 
-La opción de respaldo crea un zip con:
+La opción de respaldo ofrece tres modos:
 
-- panel.sql
-- panel.env
-- wings.config.yml cuando existe
-- runtime.conf con metadatos locales del instalador
+1. Solo Panel (BD + `.env`).
+2. Panel + Wings (agrega `config.yml`).
+3. Solo Wings (`config.yml` únicamente, requiere que Wings ya esté instalado).
 
-El zip se sube a bashupload.com y también queda guardado localmente en /tmp.
+El zip resultante queda siempre en `/tmp`, e incluye además `runtime.conf` (metadatos del instalador) y un `RESTORE.txt` con el detalle del contenido. Subirlo a bashupload.com es opcional y se confirma de forma interactiva — es un host público sin autenticación, y el archivo contiene credenciales.
 
 ### Restaurar respaldos
 
-La restauración acepta:
+Al entrar, la restauración lista los respaldos ya generados en `/tmp` (más reciente primero, con tamaño y fecha) para elegir uno por número, o entrar manualmente otra ruta local / URL.
 
-- Una URL de bashupload.com.
-- O una ruta local a un zip.
+La restauración repone, según lo que contenga el zip:
 
-La restauración repone:
-
-- La base de datos del panel, si el respaldo la contiene.
-- El archivo .env del panel.
-- La configuración de Wings.
-- Los metadatos locales del instalador.
+- La base de datos del panel y su `.env`.
+- La configuración de Wings — pero antes de reiniciar el servicio, valida que el UUID del nodo restaurado siga existiendo en la base de datos actual del panel; si no coincide, deja el `config.yml` copiado pero no reinicia Wings y avisa que hay que registrar el nodo de nuevo.
+- Los metadatos locales del instalador (`runtime.conf`).
 
 Nota importante: el respaldo no contiene el código fuente completo del panel ni el binario de Wings. La restauración está pensada para un servidor donde ya se reinstaló primero el software base y luego se reinyectan base de datos y configuraciones.
 
@@ -247,8 +248,9 @@ panel-installer/
 ## Limitaciones actuales
 
 - La instalación de Wings remoto depende de conectividad MariaDB directa hacia la base de datos del panel.
-- El instalador asume arquitectura amd64 para descargar Wings.
-- No configura automáticamente reglas de firewall o DNS externos; esos pasos siguen siendo responsabilidad del administrador.
+- No configura DNS externo ni genera certificados SSL automáticamente (ni para el panel en el flujo de Wings, ni para Wings mismo si usas esquema `https`); esos pasos siguen siendo responsabilidad del administrador.
+- Las reglas de `ufw` solo se agregan si `ufw` ya está activo en la instancia; con otros firewalls (iptables/nftables directos, firewall del proveedor cloud) hay que abrir los puertos manualmente.
+- La subida de respaldos usa bashupload.com, un host público sin autenticación — no hay otro backend de subida configurable todavía.
 
 ## Archivo de especificaciones
 

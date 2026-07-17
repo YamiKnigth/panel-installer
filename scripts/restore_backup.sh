@@ -12,7 +12,34 @@ ensure_packages unzip curl mariadb-client
 
 php_fpm_service=$(php_fpm_service_name)
 
-backup_source=$(prompt_required "Ruta local o URL del respaldo .zip: ")
+mapfile -t local_backups < <(ls -1t /tmp/pterodactyl_backup_*.zip 2>/dev/null || true)
+
+backup_source=""
+if [ "${#local_backups[@]}" -gt 0 ]; then
+  echo -e "${AZUL}Respaldos locales encontrados en /tmp:${NC}"
+  idx=0
+  for backup_file in "${local_backups[@]}"; do
+    idx=$((idx + 1))
+    echo "  $idx) $backup_file ($(du -h "$backup_file" | cut -f1), $(date -r "$backup_file" '+%Y-%m-%d %H:%M:%S'))"
+  done
+  echo "  0) Ingresar otra ruta local o URL manualmente"
+
+  while true; do
+    read -r -p "Selecciona un respaldo [0-$idx]: " backup_choice
+    if [[ "$backup_choice" =~ ^[0-9]+$ ]] && [ "$backup_choice" -ge 0 ] && [ "$backup_choice" -le "$idx" ]; then
+      break
+    fi
+    log_warn "Selecciona un número válido (0-$idx)."
+  done
+
+  if [ "$backup_choice" != "0" ]; then
+    backup_source="${local_backups[$((backup_choice - 1))]}"
+  fi
+fi
+
+if [ -z "$backup_source" ]; then
+  backup_source=$(prompt_required "Ruta local o URL del respaldo .zip: ")
+fi
 work_dir=$(mktemp -d)
 archive_path="$work_dir/backup.zip"
 trap 'rm -rf "$work_dir"' EXIT

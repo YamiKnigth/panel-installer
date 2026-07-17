@@ -16,6 +16,15 @@ if ! panel_installed; then
   exit 1
 fi
 
+current_version=$(installed_panel_version || true)
+latest_tag=$(latest_github_release_tag "pterodactyl/panel")
+log_info "Versión instalada: ${current_version:-desconocida}. Última disponible: ${latest_tag:-desconocida}."
+
+if [ -n "$current_version" ] && [ -n "$latest_tag" ] && [ "$current_version" = "$latest_tag" ]; then
+  log_success "El panel ya está en la última versión ($current_version). No es necesario actualizar."
+  exit 0
+fi
+
 pre_backup=$(create_backup_archive "yes" "pre_update_panel")
 log_success "Respaldo previo generado: $pre_backup"
 
@@ -30,9 +39,7 @@ if confirm_action "¿Subir el respaldo previo a bashupload.com? (host público, 
   fi
 fi
 
-latest_tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/pterodactyl/panel/releases/latest | sed 's#.*/tag/##')
-log_info "Última versión disponible del panel: ${latest_tag:-desconocida}."
-if ! confirm_action "¿Continuar con la actualización a esta versión?"; then
+if ! confirm_action "¿Continuar con la actualización a la versión ${latest_tag:-más reciente}?"; then
   log_info "Actualización cancelada por el usuario."
   exit 0
 fi

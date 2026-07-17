@@ -14,6 +14,16 @@ if ! wings_installed; then
   exit 1
 fi
 
+current_version=$(installed_wings_version || true)
+latest_tag=$(latest_github_release_tag "pterodactyl/wings")
+latest_version="${latest_tag#v}"
+log_info "Versión instalada: ${current_version:-desconocida}. Última disponible: ${latest_tag:-desconocida}."
+
+if [ -n "$current_version" ] && [ -n "$latest_version" ] && [ "$current_version" = "$latest_version" ]; then
+  log_success "Wings ya está en la última versión ($current_version). No es necesario actualizar."
+  exit 0
+fi
+
 pre_backup=$(create_backup_archive "yes" "pre_update_wings")
 log_success "Respaldo previo generado: $pre_backup"
 
@@ -38,14 +48,17 @@ systemctl enable --now docker
 tmp_binary=$(mktemp)
 trap 'rm -f "$tmp_binary"' EXIT
 
-log_info "Descargando la última versión de Wings..."
-curl -fsSL https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64 -o "$tmp_binary"
-chmod +x "$tmp_binary"
+wings_arch=$(wings_binary_arch)
+log_info "Descargando la última versión de Wings (arquitectura $wings_arch)..."
+curl -fsSL "https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_${wings_arch}" -o "$tmp_binary"
+chmod u+x "$tmp_binary"
 
-if ! "$tmp_binary" --version >/dev/null 2>&1; then
+version_output=$("$tmp_binary" --version 2>&1) || {
   log_error "El binario descargado de Wings no pasó la verificación (--version falló). No se detendrá el servicio actual."
+  log_error "Salida: $version_output"
   exit 1
-fi
+}
+log_info "Binario descargado reporta: $version_output"
 
 log_info "Binario verificado. Deteniendo Wings para reemplazarlo..."
 systemctl stop wings.service

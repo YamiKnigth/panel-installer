@@ -467,3 +467,24 @@ panel_installed() {
 wings_installed() {
   [ -f "$WINGS_CONFIG" ] && command_exists wings
 }
+
+wings_binary_arch() {
+  local arch="amd64"
+  [ "$(uname -m)" = "aarch64" ] && arch="arm64"
+  printf '%s' "$arch"
+}
+
+latest_github_release_tag() {
+  local repo="$1"
+  curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${repo}/releases/latest" | sed 's#.*/tag/##'
+}
+
+installed_panel_version() {
+  [ -f "$PANEL_DIR/config/app.php" ] || return 1
+  sed -n "s/^\s*'version'\s*=>\s*'\([^']*\)'.*/\1/p" "$PANEL_DIR/config/app.php" | head -n 1
+}
+
+installed_wings_version() {
+  command_exists wings || return 1
+  wings --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
+}
